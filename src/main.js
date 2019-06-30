@@ -19,48 +19,34 @@ quill.on("text-change", function(delta, oldDelta, source) {
   const prevState = getHist(-1);
 
   const value =
-    (delta.ops.length === 1 && delta.ops[0].insert) ||
-    (delta.ops[1] && delta.ops[1].insert) ||
+    (isInsert(delta) && getDeltaWithOffset(delta).op.insert) ||
     (prevState &&
-      ((delta.ops.length === 1 &&
-        delta.ops[0].delete &&
-        prevState.text.substr(0, delta.ops[0].delete)) ||
-        (delta.ops[1] &&
-          delta.ops[1].delete &&
-          prevState.text.substr(delta.ops[0].retain, delta.ops[1].delete))));
+      prevState.text.substr(
+        getDeltaWithOffset(delta).offset,
+        getDeltaWithOffset(delta).op.delete ||
+          (getAttribute(delta) && getAttribute(delta).len)
+      ));
 
   hist.push({
     delta,
     text: quill.getText(),
     value,
     delete: isDelete(delta),
-    insert: isInsert(delta)
+    insert: isInsert(delta),
+    offset: getOffset(delta)
   });
+  printHist();
 
+  // Undo-annihilator. as undo instead. remove latest delete->insert actions pair
   if (
-    (delta.ops.length === 1 && delta.ops[0].delete) ||
-    (delta.ops[1] && delta.ops[1].delete)
+    hasSimilarActions(prevState, { value, delta }) &&
+    (isInsertDeleteActionsPair(prevState, { delta }) ||
+      isAttributeActionsPair(prevState, { delta }))
   ) {
-    // retain is an offset
-    console.log("delete", "«" + value + "»");
-  } else if (
-    (delta.ops.length === 1 && delta.ops[0].insert) ||
-    (delta.ops[1] && delta.ops[1].insert)
-  ) {
-    console.log("insert", "«" + value + "»");
+    console.log("as undo", "remove latest actions pair", { value });
 
-    // Squasher. as undo instead. remove latest delete->insert actions pair
-    if (
-      hist.length >= 2 &&
-      prevState &&
-      prevState.delete &&
-      prevState.value === value
-    ) {
-      console.log("as undo", "remove latest delete->insert actions pair", {
-        value
-      });
-      hist.length = hist.length - 2;
-    }
+    hist.length = hist.length - 2;
+    printHist();
   }
 });
 
@@ -84,15 +70,90 @@ function getHist(index) {
 }
 
 function isDelete(delta) {
-  return (
-    (delta.ops.length === 1 && delta.ops[0].delete) ||
-    (delta.ops[1] && delta.ops[1].delete)
-  );
+  return Boolean(getDeltaWithOffset(delta).op.delete);
 }
 
 function isInsert(delta) {
+  return Boolean(getDeltaWithOffset(delta).op.insert);
+}
+
+function getOffset(delta) {
   return (
-    (delta.ops.length === 1 && delta.ops[0].insert) ||
-    (delta.ops[1] && delta.ops[1].insert)
+    (delta.ops.length === 2 && delta.ops[0].retain) ||
+    (delta.ops.length === 1 && 0)
   );
+}
+
+/**
+ * get bold, italic, monospace action
+ * @param {delta} delta quill delta
+ */
+function getAttribute(delta) {
+  const {
+    op: { attributes, retain },
+    offset
+  } = getDeltaWithOffset(delta);
+  if (!attributes) return null;
+  const keys = Object.keys(attributes);
+  if (!keys.length) return null;
+  if (keys.length > 1) {
+    console.warn("no_impl_yet", "несколько атрибутов за одно действие", {
+      keys,
+      delta
+    });
+  }
+  const [key] = keys;
+  return { key, state: attributes[key], offset, len: retain };
+}
+function getDeltaWithOffset(delta) {
+  return {
+    ...delta,
+    op: delta.ops.length === 1 ? delta.ops[0] : delta.ops[1],
+    offset: getOffset(delta)
+  };
+}
+
+function hasSimilarActions(prevState, { value, delta }) {
+  return (
+    hist.length >= 2 &&
+    prevState &&
+    prevState.value === value &&
+    prevState.offset === getOffset(delta)
+  );
+}
+function isInsertDeleteActionsPair(prevState, { delta }) {
+  return (
+    (prevState.delete && isInsert(delta)) ||
+    (prevState.insert && isDelete(delta))
+  );
+}
+function isAttributeActionsPair(prevState, { delta }) {
+  const attr = getAttribute(delta);
+  const prevAttr = getAttribute(prevState.delta);
+  return (
+    prevAttr &&
+    attr &&
+    prevAttr.key === attr.key &&
+    prevAttr.state !== attr.state
+  );
+}
+
+function formatAttribute(attribute) {
+  const { key, state } = attribute;
+  if (!attribute) return "";
+  return state ? `mark ${key}` : `unmark ${key}`;
+}
+
+const $hist = document.querySelector("#hist");
+function printHist() {
+  $hist.innerHTML = hist
+    .map(
+      item =>
+        `${(item.delete && "delete") ||
+          (item.insert && "insert") ||
+          formatAttribute(getAttribute(item.delta))}: «${item.value}» at ${
+          item.offset
+        }`
+    )
+    .join("\n");
 }
